@@ -1,0 +1,691 @@
+local CoreGui = game:GetService("CoreGui")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local UserInputService = game:GetService("UserInputService")
+local TeleportService = game:GetService("TeleportService")
+local GuiService = game:GetService("GuiService")
+local VirtualUser = game:GetService("VirtualUser")
+
+local localPlayer = Players.LocalPlayer
+
+-- Estados das funções
+local autoDive = false
+local infStamina = false
+local walkToPoint = false -- vira true quando você defende ou pula com Q (com Auto Dive Farm ligado)
+
+-- Segundos entre o pulo com Q e o tween de volta ao lugar salvo.
+-- Use 0 para voltar na hora (pode atrapalhar o pulo).
+local DIVE_RETURN_DELAY = 0.6
+
+-- Configurações de velocidade e stamina
+local y, z = 26, 16
+local speedValue = 26
+local q, r, s, t, u = 22, 0, 0.6, -19, 4
+local v, w, x = 0, 0, nil
+local tentandoReconectar = false
+
+-- Nome exato do valor de defesas no placar (leaderstats).
+-- Deixe nil para detectar automaticamente (procura "save", "salv" ou "defes").
+local SAVES_STAT_NAME = nil
+
+-- Cor da borda da aba selecionada (vermelho suave)
+local TAB_BORDER_COLOR = Color3.fromRGB(205, 85, 95)
+
+
+local function tentarReconectar()
+    if tentandoReconectar then return end
+    tentandoReconectar = true
+    task.wait(2)
+    if game.JobId and game.JobId ~= "" then
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, localPlayer)
+    else
+        TeleportService:Teleport(game.PlaceId, localPlayer)
+    end
+end
+
+TeleportService.TeleportInitFailed:Connect(function(player, teleportResult, errorMessage)
+    tentandoReconectar = false
+    task.wait(2)
+    TeleportService:Teleport(game.PlaceId, localPlayer)
+end)
+
+GuiService.ErrorMessageChanged:Connect(function(errorMessage)
+    if errorMessage and #errorMessage > 0 then
+        tentarReconectar() -- corrigido: antes chamava a variável (boolean) como função
+    end
+end)
+
+local function sendKey(key)
+    VirtualInputManager:SendKeyEvent(true, key, false, game)
+    task.defer(function() VirtualInputManager:SendKeyEvent(false, key, false, game) end)
+end
+
+local function D()
+    if x and x:IsDescendantOf(Workspace) then return x end
+    local E = Workspace:FindFirstChild("TPS") or Workspace:FindFirstChild("Ball") or Workspace:FindFirstChild("Football")
+    if E then 
+        if E:IsA("BasePart") then x = E return E 
+        elseif E:IsA("Model") and E.PrimaryPart then x = E.PrimaryPart return E.PrimaryPart end 
+    end
+    for _, F in ipairs(Workspace:GetChildren()) do 
+        local G = F.Name:lower()
+        if G:find("ball") or G:find("tps") or G:find("bola") then 
+            if F:IsA("BasePart") and F.CanCollide then x = F return F 
+            elseif F:IsA("Model") and F.PrimaryPart then x = F.PrimaryPart return F.PrimaryPart end 
+        end 
+    end
+    x = nil return nil
+end
+
+local function H(I)
+    if I:FindFirstChildOfClass("Weld") or I:FindFirstChildOfClass("WeldConstraint") or I:FindFirstChildOfClass("Motor6D") then return true end
+    local J = I.Parent if J and J:FindFirstChildOfClass("Humanoid") then return true end
+    for _, K in ipairs(I:GetChildren()) do 
+        if (K:IsA("SelectionBox") or K:IsA("Highlight") or K:IsA("BillboardGui") or K:IsA("SurfaceGui")) and K.Visible then return true end 
+    end
+    local L = I.Position 
+    for _, M in ipairs(Players:GetPlayers()) do 
+        local N = M.Character 
+        if N then 
+            local O = N:FindFirstChild("HumanoidRootPart")
+            if O and (L - O.Position).Magnitude <= 3.5 then return true end 
+        end 
+    end
+    return false
+end
+
+-- ANTI-AFK para Realistic Soccer
+localPlayer.Idled:Connect(function()
+    VirtualUser:CaptureController()
+    VirtualUser:ClickButton2(Vector2.new())
+end)
+
+-- CRIAÇÃO DA INTERFACE GRÁFICA
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "RealisticSoccerMenu"
+ScreenGui.Parent = CoreGui
+ScreenGui.ResetOnSpawn = false
+
+-- Botão Redondo Preto no Canto Esquerdo para Abrir/Fechar
+local ToggleButton = Instance.new("TextButton")
+ToggleButton.Name = "ToggleButton"
+ToggleButton.Size = UDim2.new(0, 45, 0, 45)
+ToggleButton.Position = UDim2.new(0, 15, 0, 15)
+ToggleButton.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+ToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ToggleButton.TextSize = 15
+ToggleButton.Text = "GK"
+ToggleButton.Font = Enum.Font.GothamBold
+ToggleButton.Parent = ScreenGui
+
+local UICornerBtn = Instance.new("UICorner")
+UICornerBtn.CornerRadius = UDim.new(1, 0)
+UICornerBtn.Parent = ToggleButton
+
+-- Janela Principal
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, 390, 0, 405)
+MainFrame.Position = UDim2.new(0.5, -195, 0.5, -202)
+MainFrame.BackgroundColor3 = Color3.fromRGB(18, 20, 28)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Visible = false
+MainFrame.Parent = ScreenGui
+
+local UICornerMain = Instance.new("UICorner")
+UICornerMain.CornerRadius = UDim.new(0, 12)
+UICornerMain.Parent = MainFrame
+
+-- ARRASTAR O MENU (mouse e toque)
+local dragging = false
+local dragStart, startPos
+
+local function attachDrag(obj)
+    obj.Active = true
+    obj.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = MainFrame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+end
+
+UserInputService.InputChanged:Connect(function(input)
+    if not dragging then return end
+    if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then
+        local delta = input.Position - dragStart
+        MainFrame.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
+attachDrag(MainFrame)
+
+-- TÍTULO: Dracosw Farm (texto branco, borda vermelha)
+local TitleFrame = Instance.new("Frame")
+TitleFrame.Name = "TitleFrame"
+TitleFrame.Size = UDim2.new(1, -20, 0, 46)
+TitleFrame.Position = UDim2.new(0, 10, 0, 10)
+TitleFrame.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
+TitleFrame.BorderSizePixel = 0
+TitleFrame.Parent = MainFrame
+attachDrag(TitleFrame)
+
+local UICornerTitle = Instance.new("UICorner")
+UICornerTitle.CornerRadius = UDim.new(0, 10)
+UICornerTitle.Parent = TitleFrame
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Size = UDim2.new(1, 0, 1, 0)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text = "Dracosw Farm"
+TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+TitleLabel.TextSize = 24
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.Parent = TitleFrame
+attachDrag(TitleLabel)
+
+-- Borda nas LETRAS: vermelho forte
+local TitleTextStroke = Instance.new("UIStroke")
+TitleTextStroke.Thickness = 2.5
+TitleTextStroke.Color = Color3.fromRGB(200, 0, 0)
+TitleTextStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+TitleTextStroke.Parent = TitleLabel
+
+-- Container Superior das Abas
+local TabsContainer = Instance.new("Frame")
+TabsContainer.Size = UDim2.new(1, -20, 0, 40)
+TabsContainer.Position = UDim2.new(0, 10, 0, 64)
+TabsContainer.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
+TabsContainer.Parent = MainFrame
+attachDrag(TabsContainer)
+
+local UICornerTabs = Instance.new("UICorner")
+UICornerTabs.CornerRadius = UDim.new(0, 8)
+UICornerTabs.Parent = TabsContainer
+
+local UIListLayoutTabs = Instance.new("UIListLayout")
+UIListLayoutTabs.FillDirection = Enum.FillDirection.Horizontal
+UIListLayoutTabs.HorizontalAlignment = Enum.HorizontalAlignment.Center
+UIListLayoutTabs.VerticalAlignment = Enum.VerticalAlignment.Center
+UIListLayoutTabs.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayoutTabs.Padding = UDim.new(0, 6)
+UIListLayoutTabs.Parent = TabsContainer
+
+local function createTabButton(name, order)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 175, 0, 30)
+    btn.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
+    btn.TextColor3 = Color3.fromRGB(160, 165, 185)
+    btn.TextSize = 13
+    btn.Text = name
+    btn.Font = Enum.Font.GothamBold
+    btn.LayoutOrder = order
+    btn.Parent = TabsContainer
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = btn
+
+    -- Borda vermelha (só aparece na aba selecionada)
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = TAB_BORDER_COLOR
+    stroke.Thickness = 1.5
+    stroke.Transparency = 0.1
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    stroke.Enabled = false
+    stroke.Parent = btn
+
+    return btn, stroke
+end
+
+local TabSteals, StrokeSteals = createTabButton("Saves", 1)
+local TabSettings, StrokeSettings = createTabButton("Settings", 2)
+
+-- Subtítulo/Título da Seção
+local SubHeader = Instance.new("TextLabel")
+SubHeader.Size = UDim2.new(1, 0, 0, 25)
+SubHeader.Position = UDim2.new(0, 0, 0, 110)
+SubHeader.BackgroundTransparency = 1
+SubHeader.TextColor3 = Color3.fromRGB(255, 255, 255)
+SubHeader.TextSize = 13
+SubHeader.Font = Enum.Font.GothamBold
+SubHeader.Text = "Auto Dive Settings!"
+SubHeader.Parent = MainFrame
+attachDrag(SubHeader)
+
+-- Container das Páginas
+local PagesContainer = Instance.new("Frame")
+PagesContainer.Size = UDim2.new(1, -20, 1, -145)
+PagesContainer.Position = UDim2.new(0, 10, 0, 137)
+PagesContainer.BackgroundTransparency = 1
+PagesContainer.Parent = MainFrame
+
+local PageSteals = Instance.new("ScrollingFrame")
+PageSteals.Size = UDim2.new(1, 0, 1, 0)
+PageSteals.BackgroundTransparency = 1
+PageSteals.BorderSizePixel = 0
+PageSteals.ScrollBarThickness = 0
+PageSteals.Visible = false
+PageSteals.CanvasSize = UDim2.new(0, 0, 0, 0)
+PageSteals.Parent = PagesContainer
+attachDrag(PageSteals)
+
+local PageSettings = Instance.new("ScrollingFrame")
+PageSettings.Size = UDim2.new(1, 0, 1, 0)
+PageSettings.BackgroundTransparency = 1
+PageSettings.BorderSizePixel = 0
+PageSettings.ScrollBarThickness = 0
+PageSettings.Visible = true
+PageSettings.CanvasSize = UDim2.new(0, 0, 0, 0)
+PageSettings.Parent = PagesContainer
+attachDrag(PageSettings)
+
+-- Comportamento das Abas (aba ativa = só a borda vermelha)
+local function setActiveTab(isSteals)
+    PageSteals.Visible = isSteals
+    PageSettings.Visible = not isSteals
+
+    StrokeSteals.Enabled = isSteals
+    StrokeSettings.Enabled = not isSteals
+
+    TabSteals.TextColor3 = isSteals and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(160, 165, 185)
+    TabSettings.TextColor3 = (not isSteals) and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(160, 165, 185)
+
+    SubHeader.Text = isSteals and "Saves Settings!" or "Auto Dive Settings!"
+end
+
+TabSteals.MouseButton1Click:Connect(function() setActiveTab(true) end)
+TabSettings.MouseButton1Click:Connect(function() setActiveTab(false) end)
+setActiveTab(false)
+
+-- Função para criar os blocos de opções
+local function createToggleSetting(text, callback)
+    local itemFrame = Instance.new("Frame")
+    itemFrame.Size = UDim2.new(1, 0, 0, 42)
+    itemFrame.BackgroundColor3 = Color3.fromRGB(26, 30, 42)
+    itemFrame.Parent = PageSettings
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = itemFrame
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -70, 1, 0)
+    label.Position = UDim2.new(0, 14, 0, 0)
+    label.BackgroundTransparency = 1
+    label.TextColor3 = Color3.fromRGB(220, 225, 240)
+    label.TextSize = 13
+    label.Font = Enum.Font.GothamMedium
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Text = text
+    label.Parent = itemFrame
+
+    local toggleBtn = Instance.new("TextButton")
+    toggleBtn.Size = UDim2.new(0, 44, 0, 22)
+    toggleBtn.Position = UDim2.new(1, -54, 0.5, -11)
+    toggleBtn.BackgroundColor3 = Color3.fromRGB(45, 50, 68)
+    toggleBtn.Text = ""
+    toggleBtn.Parent = itemFrame
+
+    local tCorner = Instance.new("UICorner")
+    tCorner.CornerRadius = UDim.new(1, 0)
+    tCorner.Parent = toggleBtn
+
+    local circle = Instance.new("Frame")
+    circle.Size = UDim2.new(0, 18, 0, 18)
+    circle.Position = UDim2.new(0, 2, 0.5, -9)
+    circle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    circle.Parent = toggleBtn
+
+    local cCorner = Instance.new("UICorner")
+    cCorner.CornerRadius = UDim.new(1, 0)
+    cCorner.Parent = circle
+
+    local active = false
+    local function setState(on)
+        active = on
+        if active then
+            toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 195, 130)
+            circle.Position = UDim2.new(1, -20, 0.5, -9)
+        else
+            toggleBtn.BackgroundColor3 = Color3.fromRGB(45, 50, 68)
+            circle.Position = UDim2.new(0, 2, 0.5, -9)
+        end
+        callback(active)
+    end
+
+    toggleBtn.MouseButton1Click:Connect(function()
+        setState(not active)
+    end)
+
+    return setState
+end
+
+local UIListLayoutSettings = Instance.new("UIListLayout")
+UIListLayoutSettings.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayoutSettings.Padding = UDim.new(0, 8)
+UIListLayoutSettings.Parent = PageSettings
+
+createToggleSetting("Auto Dive Farm", function(state)
+    autoDive = state
+    infStamina = state
+end)
+
+ToggleButton.MouseButton1Click:Connect(function()
+    MainFrame.Visible = not MainFrame.Visible
+end)
+
+-- ABA STEALS: CONTADOR DE DEFESAS
+local UIListLayoutSteals = Instance.new("UIListLayout")
+UIListLayoutSteals.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayoutSteals.Padding = UDim.new(0, 8)
+UIListLayoutSteals.Parent = PageSteals
+
+local function createStatCard(title, order)
+    local card = Instance.new("Frame")
+    card.Size = UDim2.new(1, 0, 0, 78)
+    card.BackgroundColor3 = Color3.fromRGB(26, 30, 42)
+    card.LayoutOrder = order
+    card.Parent = PageSteals
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = card
+
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Size = UDim2.new(1, -28, 0, 22)
+    titleLabel.Position = UDim2.new(0, 14, 0, 8)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.TextColor3 = Color3.fromRGB(160, 165, 185)
+    titleLabel.TextSize = 12
+    titleLabel.Font = Enum.Font.GothamMedium
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    titleLabel.Text = title
+    titleLabel.Parent = card
+
+    local valueLabel = Instance.new("TextLabel")
+    valueLabel.Size = UDim2.new(1, -28, 0, 36)
+    valueLabel.Position = UDim2.new(0, 14, 0, 30)
+    valueLabel.BackgroundTransparency = 1
+    valueLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    valueLabel.TextSize = 30
+    valueLabel.Font = Enum.Font.GothamBold
+    valueLabel.TextXAlignment = Enum.TextXAlignment.Left
+    valueLabel.Text = "0"
+    valueLabel.Parent = card
+
+    return valueLabel
+end
+
+local SessionSavesLabel = createStatCard("Defesas nesta sessão", 1)
+local TotalSavesLabel = createStatCard("Total no placar (Salvamentos)", 2)
+TotalSavesLabel.Text = "—"
+
+local sessionSaves = 0
+local totalSaves = nil
+local lastValue = 0
+
+local function updateSavesUI()
+    SessionSavesLabel.Text = tostring(sessionSaves)
+    TotalSavesLabel.Text = totalSaves and tostring(totalSaves) or "—"
+end
+
+local function findSavesStat()
+    local ls = localPlayer:FindFirstChild("leaderstats")
+    if not ls then return nil end
+
+    if SAVES_STAT_NAME then
+        local stat = ls:FindFirstChild(SAVES_STAT_NAME)
+        if stat and stat:IsA("ValueBase") then return stat end
+        return nil
+    end
+
+    for _, child in ipairs(ls:GetChildren()) do
+        if child:IsA("ValueBase") then
+            local n = child.Name:lower()
+            if n:find("save") or n:find("salv") or n:find("defes") then
+                return child
+            end
+        end
+    end
+    return nil
+end
+
+-- Espera o placar carregar e passa a acompanhar cada aumento de defesas
+task.spawn(function()
+    local stat
+    while not stat do
+        stat = findSavesStat()
+        if not stat then task.wait(1) end
+    end
+
+    lastValue = tonumber(stat.Value) or 0
+    totalSaves = lastValue
+    updateSavesUI()
+
+    stat:GetPropertyChangedSignal("Value"):Connect(function()
+        local newValue = tonumber(stat.Value) or 0
+        if newValue > lastValue then
+            sessionSaves += (newValue - lastValue)
+            -- Defendeu: com Auto Dive Farm ligado, faz um tween até a coordenada
+            if autoDive then
+                walkToPoint = true
+            end
+        end
+        lastValue = newValue
+        totalSaves = newValue
+        updateSavesUI()
+    end)
+end)
+
+-- ZONA 45x45 INVISÍVEL (parte do Auto Dive Farm): com ele ligado, ao entrar
+-- nela vira Goleiro automaticamente (repete até conseguir)
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local ZONE_POS = Vector3.new(0, -90, 45)   -- coordenada copiada
+local ZONE_SIZE = 45                       -- área de 45 x 45
+local ZONE_RETRY = 0.5                     -- segundos entre cada tentativa
+local GOALIE_COLOR = BrickColor.new("Earth green")
+
+local function isInsideZone(pos)
+    local half = ZONE_SIZE / 2
+    return math.abs(pos.X - ZONE_POS.X) <= half
+        and math.abs(pos.Y - ZONE_POS.Y) <= half
+        and math.abs(pos.Z - ZONE_POS.Z) <= half
+end
+
+local function fireGoalie()
+    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+    local event = remotes and remotes:FindFirstChild("TeamChange")
+    if event then
+        pcall(function()
+            event:FireServer(GOALIE_COLOR, "Goalie")
+        end)
+    end
+end
+
+task.spawn(function()
+    while true do
+        if not autoDive then
+            task.wait(0.2)
+        else
+            local char = localPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+            -- Dentro da zona e ainda não é goleiro: tenta de novo até funcionar
+            if hrp and isInsideZone(hrp.Position) and localPlayer.TeamColor ~= GOALIE_COLOR then
+                fireGoalie()
+                task.wait(ZONE_RETRY)
+            else
+                task.wait(0.1)
+            end
+        end
+    end
+end)
+
+-- IR PARA A COORDENADA APÓS DEFENDER (parte do Auto Dive Farm)
+-- A cada defesa (placar de salvamentos +1) o personagem faz UM tween linear
+-- até WALK_POS na velocidade WALK_SPEED. Sem loop: depois que chega, nada
+-- fica reforçando a posição. Na próxima defesa, faz o tween de novo.
+local TweenService = game:GetService("TweenService")
+
+local WALK_POS = Vector3.new(156.1, 6.1, 10.8)
+local WALK_SPEED = 16        -- velocidade do tween (studs por segundo)
+local WALK_KEEP_Y = false    -- false = usa o Y exato da coordenada; true = mantém a altura atual
+
+local walkTween
+
+local function stopWalkTween()
+    if walkTween then
+        walkTween:Cancel()
+        walkTween = nil
+    end
+end
+
+localPlayer.CharacterAdded:Connect(function()
+    walkToPoint = false
+    stopWalkTween()
+end)
+
+task.spawn(function()
+    while true do
+        if not autoDive then
+            walkToPoint = false
+            stopWalkTween()
+        elseif walkToPoint then
+            walkToPoint = false -- consome o pedido: um único tween por defesa
+
+            local char = localPlayer.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+            if hum and hrp and hum.Health > 0 then
+                stopWalkTween()
+
+                local target = Vector3.new(
+                    WALK_POS.X,
+                    WALK_KEEP_Y and hrp.Position.Y or WALK_POS.Y,
+                    WALK_POS.Z
+                )
+                local dist = (target - hrp.Position).Magnitude
+
+                if dist > 0.5 then
+                    local rotation = hrp.CFrame - hrp.CFrame.Position
+                    walkTween = TweenService:Create(
+                        hrp,
+                        TweenInfo.new(dist / WALK_SPEED, Enum.EasingStyle.Linear),
+                        { CFrame = CFrame.new(target) * rotation }
+                    )
+                    walkTween:Play()
+                end
+            end
+        end
+
+        task.wait(0.05)
+    end
+end)
+
+-- ADICIONAL (fora do script original do Auto Dive): volta ao lugar salvo após Q ou E
+local lastReturnRequest = 0
+local returnToken = 0
+
+local function requestReturnTween()
+    -- Se um tween ainda está te levando ao lugar salvo, cancela na hora para ele
+    -- não arrastar o personagem durante o pulo/defesa.
+    stopWalkTween()
+
+    local now = os.clock()
+    if now - lastReturnRequest < 0.3 then return end -- evita pedidos duplicados
+    lastReturnRequest = now
+
+    -- Só o pulo mais recente conta: pedidos antigos não iniciam o tween no meio de outro pulo
+    returnToken += 1
+    local myToken = returnToken
+    task.delay(DIVE_RETURN_DELAY, function()
+        if autoDive and myToken == returnToken then
+            walkToPoint = true
+        end
+    end)
+end
+
+-- Quando o Auto Dive aperta Q ou E, avisa o tween. O sendKey ORIGINAL (acima) não foi
+-- alterado: ele roda primeiro, exatamente como era, e só depois o aviso é feito.
+do
+    local originalSendKey = sendKey
+    sendKey = function(key)
+        originalSendKey(key)
+        if (key == Enum.KeyCode.Q or key == Enum.KeyCode.E) and autoDive then
+            requestReturnTween()
+        end
+    end
+end
+
+-- AUTO DIVE + STAMINA (copiado do script original do Auto Dive, sem alterações)
+local R, S = 0, 0.03
+RunService.Heartbeat:Connect(function(T)
+    local U = localPlayer.Character if not U then return end
+
+    -- Executa o boost de velocidade/stamina se ativado
+    if infStamina then
+        local targetSpd = speedValue
+        local V = U:FindFirstChildOfClass("Humanoid")
+        local W = U:FindFirstChild("HumanoidRootPart")
+        if W and V and V.Health > 0 then
+            local X = V.MoveDirection 
+            if X.Magnitude == 0 then 
+                local Y = Vector3.new(W.AssemblyLinearVelocity.X, 0, W.AssemblyLinearVelocity.Z)
+                if Y.Magnitude > 1 then X = Y.Unit end 
+            end
+            if X.Magnitude > 0 then 
+                local Z = targetSpd - z 
+                local _ = Vector3.new(X.X, 0, X.Z).Unit * (Z * T)
+                W.CFrame = W.CFrame + _ 
+            end
+        end
+    end
+
+    if not autoDive then return end
+
+    local a0 = os.clock() if (a0 - R) < S then return end R = a0
+    local a1 = U:FindFirstChild("HumanoidRootPart")
+    local a2 = U:FindFirstChildOfClass("Humanoid") 
+    if not a1 or not a2 then return end
+    if (a0 - v) < r then return end
+    local a3 = D() if not a3 or H(a3) then return end
+    
+    -- Ignora se a bola estiver devagar ou parada (velocidade horizontal abaixo de 2.5)
+    local velBola = a3.AssemblyLinearVelocity or a3.Velocity
+    local velHorizontal = Vector3.new(velBola.X, 0, velBola.Z).Magnitude
+    if velHorizontal <= 2.5 then return end
+
+    local a4 = a3.Position local a5 = a1.Position local a6 = (a4 - a5).Magnitude
+    if a6 <= q then
+        local a7 = a1.CFrame:PointToObjectSpace(a4)
+        if a7.Z >= t and a7.Z <= u then
+            if a7.X > 1.5 then v = a0 sendKey(Enum.KeyCode.E) elseif a7.X < -1.5 then v = a0 sendKey(Enum.KeyCode.Q) end
+        end
+    end
+end)
+
+-- Teclas Q e E (você apertando): com Auto Dive Farm ligado, também volta ao lugar salvo
+UserInputService.InputBegan:Connect(function(input)
+    if (input.KeyCode == Enum.KeyCode.Q or input.KeyCode == Enum.KeyCode.E)
+        and autoDive
+        and not UserInputService:GetFocusedTextBox() then
+        requestReturnTween()
+    end
+end)
