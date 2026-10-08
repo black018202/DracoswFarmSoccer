@@ -14,6 +14,7 @@ local localPlayer = Players.LocalPlayer
 local autoDive = false
 local infStamina = false
 local walkToPoint = false -- vira true quando você defende ou pula com Q (com Auto Dive Farm ligado)
+local chasingPlayer = false -- true enquanto o tween está indo até alguém que pisou na área vermelha
 
 -- Segundos entre o pulo com Q e o tween de volta ao lugar salvo.
 -- Use 0 para voltar na hora (pode atrapalhar o pulo).
@@ -32,6 +33,11 @@ local SAVES_STAT_NAME = nil
 
 -- Cor da borda da aba selecionada (vermelho suave)
 local TAB_BORDER_COLOR = Color3.fromRGB(205, 85, 95)
+
+-- OLHAR SEMPRE PRA FRENTE (parte do Auto Dive Farm)
+-- Direção fixa onde o personagem olha. (nil = usa a direção em que você estava olhando ao ligar.)
+-- Ou defina uma direção fixa do mapa, por exemplo: Vector3.new(0, 0, -1)
+local FACE_DIRECTION = Vector3.new(-0.9999, 0, -0.0137)
 
 
 local function tentarReconectar()
@@ -109,15 +115,14 @@ ScreenGui.Parent = CoreGui
 ScreenGui.ResetOnSpawn = false
 
 -- Botão Redondo Preto no Canto Esquerdo para Abrir/Fechar
-local ToggleButton = Instance.new("TextButton")
+local ToggleButton = Instance.new("ImageButton")
 ToggleButton.Name = "ToggleButton"
 ToggleButton.Size = UDim2.new(0, 45, 0, 45)
 ToggleButton.Position = UDim2.new(0, 15, 0, 15)
 ToggleButton.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
-ToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-ToggleButton.TextSize = 15
-ToggleButton.Text = "GK"
-ToggleButton.Font = Enum.Font.GothamBold
+ToggleButton.Image = "rbxassetid://81015096581028"
+ToggleButton.ScaleType = Enum.ScaleType.Crop
+ToggleButton.AutoButtonColor = false
 ToggleButton.Parent = ScreenGui
 
 local UICornerBtn = Instance.new("UICorner")
@@ -127,8 +132,8 @@ UICornerBtn.Parent = ToggleButton
 -- Janela Principal
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.new(0, 390, 0, 405)
-MainFrame.Position = UDim2.new(0.5, -195, 0.5, -202)
+MainFrame.Size = UDim2.new(0, 330, 0, 375)
+MainFrame.Position = UDim2.new(0.5, -165, 0.5, -202)
 MainFrame.BackgroundColor3 = Color3.fromRGB(18, 20, 28)
 MainFrame.BorderSizePixel = 0
 MainFrame.Active = true
@@ -179,7 +184,7 @@ local TitleFrame = Instance.new("Frame")
 TitleFrame.Name = "TitleFrame"
 TitleFrame.Size = UDim2.new(1, -20, 0, 46)
 TitleFrame.Position = UDim2.new(0, 10, 0, 10)
-TitleFrame.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
+TitleFrame.BackgroundColor3 = Color3.fromRGB(18, 20, 28) -- mesma cor do menu
 TitleFrame.BorderSizePixel = 0
 TitleFrame.Parent = MainFrame
 attachDrag(TitleFrame)
@@ -191,19 +196,13 @@ UICornerTitle.Parent = TitleFrame
 local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, 0, 1, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "Dracosw Farm"
+TitleLabel.RichText = true
+TitleLabel.Text = '<font color="rgb(225,40,60)">Dracosw</font> Farm' -- Dracosw vermelho, Farm branco
 TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 TitleLabel.TextSize = 24
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.Parent = TitleFrame
 attachDrag(TitleLabel)
-
--- Borda nas LETRAS: vermelho forte
-local TitleTextStroke = Instance.new("UIStroke")
-TitleTextStroke.Thickness = 2.5
-TitleTextStroke.Color = Color3.fromRGB(200, 0, 0)
-TitleTextStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
-TitleTextStroke.Parent = TitleLabel
 
 -- Container Superior das Abas
 local TabsContainer = Instance.new("Frame")
@@ -227,7 +226,7 @@ UIListLayoutTabs.Parent = TabsContainer
 
 local function createTabButton(name, order)
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0, 175, 0, 30)
+    btn.Size = UDim2.new(0, 150, 0, 30)
     btn.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
     btn.TextColor3 = Color3.fromRGB(160, 165, 185)
     btn.TextSize = 13
@@ -385,7 +384,43 @@ createToggleSetting("Auto Dive Farm", function(state)
     infStamina = state
 end)
 
+-- Botão redondo arrastável: clique abre/fecha o menu, arrastar só move o botão
+local btnDragging = false
+local btnMoved = false
+local btnDragStart, btnStartPos
+
+ToggleButton.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        btnDragging = true
+        btnMoved = false
+        btnDragStart = input.Position
+        btnStartPos = ToggleButton.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                btnDragging = false
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if not btnDragging then return end
+    if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then
+        local delta = input.Position - btnDragStart
+        if delta.Magnitude > 5 then btnMoved = true end
+        if btnMoved then
+            ToggleButton.Position = UDim2.new(
+                btnStartPos.X.Scale, btnStartPos.X.Offset + delta.X,
+                btnStartPos.Y.Scale, btnStartPos.Y.Offset + delta.Y
+            )
+        end
+    end
+end)
+
 ToggleButton.MouseButton1Click:Connect(function()
+    if btnMoved then return end -- arrastou: não abre/fecha o menu
     MainFrame.Visible = not MainFrame.Visible
 end)
 
@@ -544,7 +579,7 @@ end)
 local TweenService = game:GetService("TweenService")
 
 local WALK_POS = Vector3.new(156.1, 6.1, 10.8)
-local WALK_SPEED = 16        -- velocidade do tween (studs por segundo)
+local WALK_SPEED = 24        -- velocidade do tween (studs por segundo)
 local WALK_KEEP_Y = false    -- false = usa o Y exato da coordenada; true = mantém a altura atual
 
 local walkTween
@@ -566,7 +601,7 @@ task.spawn(function()
         if not autoDive then
             walkToPoint = false
             stopWalkTween()
-        elseif walkToPoint then
+        elseif walkToPoint and not chasingPlayer then
             walkToPoint = false -- consome o pedido: um único tween por defesa
 
             local char = localPlayer.Character
@@ -687,5 +722,210 @@ UserInputService.InputBegan:Connect(function(input)
         and autoDive
         and not UserInputService:GetFocusedTextBox() then
         requestReturnTween()
+    end
+end)
+
+-- OLHAR SEMPRE PRA FRENTE (parte do Auto Dive Farm)
+-- Com o Auto Dive Farm ligado, o personagem fica travado olhando numa direção fixa,
+-- instantaneamente (a cada frame). Não altera o Auto Dive nem o tween.
+-- Quando chega no gol (WALK_POS), a direção é capturada UMA vez de novo e travada.
+local GOAL_ARRIVE_DIST = 4 -- distância até o gol para considerar "chegou"
+
+local lockedLook = nil
+local faceWasActive = false
+local goalFaceDone = false
+
+-- Ao renascer, captura a direção de novo
+localPlayer.CharacterAdded:Connect(function()
+    faceWasActive = false
+    goalFaceDone = false
+    lockedLook = nil
+end)
+
+local function captureLook(hrp)
+    local dir = FACE_DIRECTION or hrp.CFrame.LookVector
+    dir = Vector3.new(dir.X, 0, dir.Z)
+    return dir.Magnitude > 0 and dir.Unit or Vector3.new(0, 0, -1)
+end
+
+RunService.Heartbeat:Connect(function()
+    local char = localPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not (hum and hrp) then return end
+
+    if autoDive then
+        if not faceWasActive then
+            faceWasActive = true
+            lockedLook = captureLook(hrp)
+        end
+
+        -- Chegou no gol: ativa o olhar pra frente uma vez (recaptura a direção)
+        if not goalFaceDone and (hrp.Position - WALK_POS).Magnitude <= GOAL_ARRIVE_DIST then
+            goalFaceDone = true
+            lockedLook = captureLook(hrp)
+        end
+
+        hum.AutoRotate = false -- impede o Humanoid de girar o personagem pro lado que anda
+
+        local pos = hrp.Position
+        hrp.CFrame = CFrame.lookAt(pos, pos + lockedLook)
+        hrp.AssemblyAngularVelocity = Vector3.zero
+    elseif faceWasActive then
+        faceWasActive = false
+        goalFaceDone = false
+        lockedLook = nil
+        hum.AutoRotate = true -- desligou: volta ao normal
+    end
+end)
+
+-- ÁREA VERMELHA NO CHÃO (parte do Auto Dive Farm)
+-- Com o Auto Dive Farm ligado aparece uma área vermelha no chão, perto do gol.
+-- Quando OUTRA pessoa pisa nela, seu personagem faz um tween até ela e depois
+-- volta pra coordenada salva (WALK_POS).
+local RED_ZONE_SIZE_X = 18                                            -- largura da área (em studs)
+local RED_ZONE_SIZE_Z = 28                                            -- profundidade da área (em studs)
+local RED_ZONE_POS = Vector3.new(WALK_POS.X, WALK_POS.Y - 3, WALK_POS.Z) -- centro (altura do chão)
+local CHASE_SPEED = 80       -- velocidade do tween até a pessoa (studs por segundo)
+local CHASE_STOP_DIST = 3    -- para a essa distância da pessoa
+local CHASE_TIMEOUT = 4      -- desiste se não alcançar em X segundos
+local CHASE_HOLD = 0.3       -- segundos parado na pessoa antes de voltar
+local CHASE_COOLDOWN = 3     -- segundos antes de ir de novo na mesma pessoa
+
+local redZone = Instance.new("Part")
+redZone.Name = "RedZone"
+redZone.Anchored = true
+redZone.CanCollide = false
+redZone.CanTouch = false
+redZone.CanQuery = false
+redZone.CastShadow = false
+redZone.Material = Enum.Material.Neon
+redZone.Color = Color3.fromRGB(255, 0, 0)
+redZone.Transparency = 1 -- invisível, mas continua funcionando
+redZone.Size = Vector3.new(RED_ZONE_SIZE_X, 0.2, RED_ZONE_SIZE_Z)
+redZone.CFrame = CFrame.new(RED_ZONE_POS)
+
+local function isInsideRedZone(pos)
+    return math.abs(pos.X - RED_ZONE_POS.X) <= RED_ZONE_SIZE_X / 2
+        and math.abs(pos.Z - RED_ZONE_POS.Z) <= RED_ZONE_SIZE_Z / 2
+        and pos.Y >= RED_ZONE_POS.Y - 2
+        and pos.Y <= RED_ZONE_POS.Y + 8
+end
+
+local lastChase = {}
+
+local function chasePlayer(target)
+    chasingPlayer = true
+    stopWalkTween()
+
+    local startT = os.clock()
+    local caught = false
+    while autoDive and os.clock() - startT < CHASE_TIMEOUT do
+        local dt = RunService.Heartbeat:Wait()
+        local char = localPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        local tChar = target.Character
+        local tHrp = tChar and tChar:FindFirstChild("HumanoidRootPart")
+        if not (hrp and tHrp) then break end
+
+        -- Pessoa saiu da área vermelha: o tween não pega mais, volta pro gol
+        if not isInsideRedZone(tHrp.Position) then break end
+
+        local diff = tHrp.Position - hrp.Position
+        local dist = diff.Magnitude
+        if dist <= CHASE_STOP_DIST then
+            caught = true
+            break
+        end
+
+        local step = math.min(CHASE_SPEED * dt, dist - CHASE_STOP_DIST)
+        local rotation = hrp.CFrame - hrp.CFrame.Position
+        hrp.CFrame = CFrame.new(hrp.Position + diff.Unit * step) * rotation
+    end
+
+    if caught then
+        task.wait(CHASE_HOLD)
+    end
+    lastChase[target] = os.clock()
+    chasingPlayer = false
+
+    -- Depois do tween na pessoa, volta pra coordenada salva
+    if autoDive then
+        walkToPoint = true
+    end
+end
+
+task.spawn(function()
+    while true do
+        if not autoDive then
+            redZone.Parent = nil
+            task.wait(0.2)
+        else
+            if redZone.Parent ~= Workspace then
+                redZone.Parent = Workspace
+            end
+
+            -- O tween só funciona com o SEU personagem dentro da área vermelha invisível
+            local myChar = localPlayer.Character
+            local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+            local meInside = myHrp and isInsideRedZone(myHrp.Position)
+
+            if not chasingPlayer and meInside then
+                local now = os.clock()
+                for _, plr in ipairs(Players:GetPlayers()) do
+                    if plr ~= localPlayer then
+                        local c = plr.Character
+                        local hum = c and c:FindFirstChildOfClass("Humanoid")
+                        local hrp = c and c:FindFirstChild("HumanoidRootPart")
+                        if hum and hrp and hum.Health > 0
+                            and isInsideRedZone(hrp.Position)
+                            and (now - (lastChase[plr] or 0)) > CHASE_COOLDOWN then
+                            chasePlayer(plr)
+                            break
+                        end
+                    end
+                end
+            end
+            task.wait(0.1)
+        end
+    end
+end)
+
+-- ANTI-KICK AFK (parte do Auto Dive Farm)
+-- A cada 15 segundos o personagem dá um passo curto de verdade (tecla A ou D) e
+-- volta pro mesmo lugar, então fica praticamente parado mas conta como atividade.
+-- Não faz nada enquanto está indo pro gol ou atrás de alguém na área vermelha.
+local AFK_MOVE_INTERVAL = 15   -- segundos entre cada passo
+local AFK_MOVE_TIME = 0.15     -- tempo andando (curto)
+local afkSide = 1
+
+task.spawn(function()
+    while true do
+        task.wait(AFK_MOVE_INTERVAL)
+
+        local walkingTween = walkTween and walkTween.PlaybackState == Enum.PlaybackState.Playing
+        if autoDive and not chasingPlayer and not walkToPoint and not walkingTween then
+            local char = localPlayer.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+            if hum and hrp and hum.Health > 0 and hum.FloorMaterial ~= Enum.Material.Air then
+                local savedPos = hrp.Position
+                afkSide = -afkSide
+                local key = afkSide > 0 and Enum.KeyCode.D or Enum.KeyCode.A
+
+                VirtualInputManager:SendKeyEvent(true, key, false, game)
+                task.wait(AFK_MOVE_TIME)
+                VirtualInputManager:SendKeyEvent(false, key, false, game)
+
+                -- Volta pro mesmo lugar (se nenhum tween assumiu o controle nesse meio tempo)
+                local tweenNow = walkTween and walkTween.PlaybackState == Enum.PlaybackState.Playing
+                if autoDive and not chasingPlayer and not walkToPoint and not tweenNow and hrp.Parent then
+                    local rotation = hrp.CFrame - hrp.CFrame.Position
+                    hrp.CFrame = CFrame.new(savedPos) * rotation
+                    hrp.AssemblyLinearVelocity = Vector3.zero
+                end
+            end
+        end
     end
 end)
