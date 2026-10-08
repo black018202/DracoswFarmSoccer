@@ -25,7 +25,7 @@ local DIVE_RETURN_DELAY = 0.6
 -- Configurações de velocidade e stamina
 local y, z = 26, 16
 local speedValue = 26
-local q, r, s, t, u = 22, 0, 0.6, -19, 4
+local q, r, s, t, u = 22, 0.03, 0.6, -19, 4
 local v, w, x = 0, 0, nil
 local tentandoReconectar = false
 
@@ -673,7 +673,56 @@ do
 end
 
 -- AUTO DIVE + STAMINA (copiado do script original do Auto Dive, sem alterações)
-local R, S = 0, 0.03
+-- MELHORIA DO AUTO DIVE: pega a bola olhando a TRAJETÓRIA (onde ela cruza a linha do goleiro).
+-- S = 0: checa a cada frame (antes esperava 0.03s entre as checagens)
+local DIVE_RANGE = 34            -- alcance pra bola vindo de frente (antes 22): enxerga chute forte de mais longe
+local DIVE_FRONT = -32           -- até onde na frente (Z) já enxerga a bola vindo (antes -19)
+local DIVE_TRIGGER_TIME = 0.30   -- pula quando a bola chega em até X s (base)...
+local DIVE_LATERAL_TIME = 0.012  -- ...mais X s por stud de distância lateral (bola longe do goleiro = pula antes)
+local DIVE_MAX_LATERAL = 20      -- limite da distância lateral usada nessa conta
+local DIVE_URGENT_TIME = 0.15    -- bola chegando em menos que isso: pula na hora, sem confirmar
+local DIVE_CONFIRM_FRAMES = 2    -- senão precisa dar o MESMO lado em X checagens seguidas
+local DIVE_CONFIRM_WINDOW = 0.1  -- as checagens precisam ser seguidas (em segundos)
+local FAST_BALL = 35             -- acima disso a bola é chute/passe: perto de jogador não conta como "bola presa"
+local R, S = 0, 0
+
+local pendingKey, pendingCount, pendingTime = nil, 0, 0
+local lastBallObj, lastBallPos, lastBallTime = nil, nil, 0
+
+-- Bola presa (solda/personagem): vale mesmo com a bola rápida
+local function isBallAttached(I)
+    if I:FindFirstChildOfClass("Weld") or I:FindFirstChildOfClass("WeldConstraint") or I:FindFirstChildOfClass("Motor6D") then return true end
+    local J = I.Parent if J and J:FindFirstChildOfClass("Humanoid") then return true end
+    return false
+end
+
+-- Decide o lado do pulo. Retorna (tecla, urgente) ou nil
+local function diveKeyFor(a1, ballPos, ballVel)
+    local a7 = a1.CFrame:PointToObjectSpace(ballPos)
+    local dist = (ballPos - a1.Position).Magnitude
+
+    -- velocidade da bola em relação ao goleiro (Z > 0 = bola vindo na direção dele)
+    local lv = a1.CFrame:VectorToObjectSpace(ballVel)
+
+    if a7.Z < 0 and lv.Z > 3 then
+        -- TRAJETÓRIA: bola vindo de frente
+        if dist > DIVE_RANGE or a7.Z < DIVE_FRONT then return nil end
+        local tReach = -a7.Z / lv.Z                         -- tempo até a bola chegar na linha do goleiro
+        local crossX = a7.X + lv.X * tReach                 -- onde ela vai cruzar (esquerda/direita)
+        local need = DIVE_TRIGGER_TIME + math.min(math.abs(crossX), DIVE_MAX_LATERAL) * DIVE_LATERAL_TIME
+        if tReach > need then return nil end                -- ainda cedo: espera pra não errar o lado
+        local urgent = tReach <= DIVE_URGENT_TIME
+        if crossX > 1.5 then return Enum.KeyCode.E, urgent
+        elseif crossX < -1.5 then return Enum.KeyCode.Q, urgent end
+        return nil                                          -- vai no meio, direto no goleiro
+    end
+
+    -- bola não vem de frente: regra original (lado pela posição atual)
+    if dist > q or a7.Z < t or a7.Z > u then return nil end
+    if a7.X > 1.5 then return Enum.KeyCode.E, false elseif a7.X < -1.5 then return Enum.KeyCode.Q, false end
+    return nil
+end
+
 RunService.Heartbeat:Connect(function(T)
     local U = localPlayer.Character if not U then return end
 
@@ -703,19 +752,48 @@ RunService.Heartbeat:Connect(function(T)
     local a2 = U:FindFirstChildOfClass("Humanoid") 
     if not a1 or not a2 then return end
     if (a0 - v) < r then return end
-    local a3 = D() if not a3 or H(a3) then return end
+    local a3 = D() if not a3 then return end
     
-    -- Ignora se a bola estiver devagar ou parada (velocidade horizontal abaixo de 2.5)
     local velBola = a3.AssemblyLinearVelocity or a3.Velocity
+
+    -- Se a velocidade informada vier zerada/baixa demais, usa o deslocamento real da bola entre frames
+    local nowPos = a3.Position
+    if lastBallObj == a3 and (a0 - lastBallTime) > 0 and (a0 - lastBallTime) < 0.1 then
+        local posVel = (nowPos - lastBallPos) / (a0 - lastBallTime)
+        local posH = Vector3.new(posVel.X, 0, posVel.Z).Magnitude
+        local repH = Vector3.new(velBola.X, 0, velBola.Z).Magnitude
+        if posH > 8 and posH < 300 and posH > repH * 1.5 then velBola = posVel end
+    end
+    lastBallObj, lastBallPos, lastBallTime = a3, nowPos, a0
+
+    -- Ignora se a bola estiver devagar ou parada (velocidade horizontal abaixo de 2.5)
     local velHorizontal = Vector3.new(velBola.X, 0, velBola.Z).Magnitude
     if velHorizontal <= 2.5 then return end
 
-    local a4 = a3.Position local a5 = a1.Position local a6 = (a4 - a5).Magnitude
-    if a6 <= q then
-        local a7 = a1.CFrame:PointToObjectSpace(a4)
-        if a7.Z >= t and a7.Z <= u then
-            if a7.X > 1.5 then v = a0 sendKey(Enum.KeyCode.E) elseif a7.X < -1.5 then v = a0 sendKey(Enum.KeyCode.Q) end
+    -- Bola presa: devagar usa a checagem completa (H); chute/passe rápido só olha se está presa de verdade,
+    -- assim um jogador perto da bola não bloqueia o pulo
+    if velHorizontal < FAST_BALL then
+        if H(a3) then return end
+    elseif isBallAttached(a3) then
+        return
+    end
+
+    local diveKey, urgent = diveKeyFor(a1, a3.Position, velBola)
+    if diveKey then
+        -- confirma o lado em checagens seguidas antes de pular (bola chegando já = pula na hora)
+        if diveKey == pendingKey and (a0 - pendingTime) <= DIVE_CONFIRM_WINDOW then
+            pendingCount += 1
+        else
+            pendingKey, pendingCount = diveKey, 1
         end
+        pendingTime = a0
+
+        if urgent or pendingCount >= DIVE_CONFIRM_FRAMES then
+            pendingKey, pendingCount = nil, 0
+            v = a0 sendKey(diveKey)
+        end
+    else
+        pendingKey, pendingCount = nil, 0
     end
 end)
 
@@ -792,11 +870,21 @@ end)
 -- Com o Auto Dive Farm ligado aparece uma área vermelha no chão, perto do gol.
 -- Quando OUTRA pessoa pisa nela, seu personagem faz um tween até ela e depois
 -- volta pra coordenada salva (WALK_POS).
-local RED_ZONE_SIZE_X = 18                                            -- largura da área (em studs)
-local RED_ZONE_SIZE_Z = 28                                            -- profundidade da área (em studs)
-local RED_ZONE_POS = Vector3.new(WALK_POS.X, WALK_POS.Y - 3, WALK_POS.Z) -- centro (altura do chão)
-local CHASE_SPEED = 80       -- velocidade do tween até a pessoa (studs por segundo)
-local CHASE_STOP_DIST = 3    -- para a essa distância da pessoa
+local RED_ZONE_SIZE_X = 15                                            -- largura da área (em studs), toda ATRÁS dos pés do personagem
+local RED_ZONE_SIZE_Z = 28                                            -- lados da área (em studs)
+local RED_ZONE_LOWER = 0.8                                            -- quanto a área desce em relação ao chão estimado (studs)
+local RED_ZONE_SELF_MARGIN = 2                                        -- folga só pra checar se VOCÊ está na área (borda da frente = seus pés)
+local RED_ZONE_LENGTH_X = RED_ZONE_SIZE_X
+-- "Frente" = direção do FACE_DIRECTION (eixo X). A borda da frente fica nos pés do personagem no local salvo
+-- (WALK_POS) e a área se estende pra trás a partir dali.
+local frontSign = (FACE_DIRECTION and FACE_DIRECTION.X > 0) and 1 or -1
+local RED_ZONE_POS = Vector3.new(
+    WALK_POS.X - frontSign * RED_ZONE_SIZE_X / 2,
+    WALK_POS.Y - 3 - RED_ZONE_LOWER,
+    WALK_POS.Z
+) -- centro (altura do chão)
+local CHASE_SPEED = 220      -- velocidade do tween até a pessoa (studs por segundo)
+local CHASE_STOP_DIST = 0    -- 0 = vai pra dentro da pessoa (aumente pra parar mais longe)
 local CHASE_TIMEOUT = 4      -- desiste se não alcançar em X segundos
 local CHASE_HOLD = 0.3       -- segundos parado na pessoa antes de voltar
 local CHASE_COOLDOWN = 3     -- segundos antes de ir de novo na mesma pessoa
@@ -810,15 +898,41 @@ redZone.CanQuery = false
 redZone.CastShadow = false
 redZone.Material = Enum.Material.Neon
 redZone.Color = Color3.fromRGB(255, 0, 0)
-redZone.Transparency = 1 -- invisível, mas continua funcionando
-redZone.Size = Vector3.new(RED_ZONE_SIZE_X, 0.2, RED_ZONE_SIZE_Z)
+redZone.Transparency = 0.5 -- vermelha no chão, transparente (mas não muito)
+redZone.Size = Vector3.new(RED_ZONE_LENGTH_X, 0.2, RED_ZONE_SIZE_Z)
 redZone.CFrame = CFrame.new(RED_ZONE_POS)
 
-local function isInsideRedZone(pos)
-    return math.abs(pos.X - RED_ZONE_POS.X) <= RED_ZONE_SIZE_X / 2
-        and math.abs(pos.Z - RED_ZONE_POS.Z) <= RED_ZONE_SIZE_Z / 2
-        and pos.Y >= RED_ZONE_POS.Y - 2
-        and pos.Y <= RED_ZONE_POS.Y + 8
+local function isInsideRedZone(pos, margin)
+    margin = margin or 0
+    return math.abs(pos.X - RED_ZONE_POS.X) <= RED_ZONE_LENGTH_X / 2 + margin
+        and math.abs(pos.Z - RED_ZONE_POS.Z) <= RED_ZONE_SIZE_Z / 2 + margin
+        and pos.Y >= RED_ZONE_POS.Y - 3
+        and pos.Y <= RED_ZONE_POS.Y + 12
+end
+
+-- Detecta pelo PÉ do personagem (sola) e também pelas pernas/corpo, funciona em R6 e R15
+local FOOT_PARTS = { "LeftFoot", "RightFoot", "Left Leg", "Right Leg", "LeftLowerLeg", "RightLowerLeg" }
+
+local function isCharInRedZone(char, margin)
+    if not char then return false end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+
+    -- sola estimada pelo HumanoidRootPart
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local hip = hum and hum.HipHeight or 0
+    if isInsideRedZone(hrp.Position - Vector3.new(0, hip + hrp.Size.Y / 2, 0), margin) then return true end
+    if isInsideRedZone(hrp.Position, margin) then return true end
+
+    -- sola de cada pé/perna (parte de baixo da peça)
+    for _, name in ipairs(FOOT_PARTS) do
+        local part = char:FindFirstChild(name)
+        if part and part:IsA("BasePart") then
+            if isInsideRedZone(part.Position - Vector3.new(0, part.Size.Y / 2, 0), margin) then return true end
+            if isInsideRedZone(part.Position, margin) then return true end
+        end
+    end
+    return false
 end
 
 local lastChase = {}
@@ -838,11 +952,11 @@ local function chasePlayer(target)
         if not (hrp and tHrp) then break end
 
         -- Pessoa saiu da área vermelha: o tween não pega mais, volta pro gol
-        if not isInsideRedZone(tHrp.Position) then break end
+        if not isCharInRedZone(tChar) then break end
 
         local diff = tHrp.Position - hrp.Position
         local dist = diff.Magnitude
-        if dist <= CHASE_STOP_DIST then
+        if dist <= math.max(CHASE_STOP_DIST, 0.5) then
             caught = true
             break
         end
@@ -877,7 +991,7 @@ task.spawn(function()
             -- O tween só funciona com o SEU personagem dentro da área vermelha invisível
             local myChar = localPlayer.Character
             local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
-            local meInside = myHrp and isInsideRedZone(myHrp.Position)
+            local meInside = myHrp and isCharInRedZone(myChar, RED_ZONE_SELF_MARGIN)
 
             if not chasingPlayer and meInside and os.clock() - lastDiveClock >= DIVE_FREE_TIME then
                 local now = os.clock()
@@ -887,7 +1001,7 @@ task.spawn(function()
                         local hum = c and c:FindFirstChildOfClass("Humanoid")
                         local hrp = c and c:FindFirstChild("HumanoidRootPart")
                         if hum and hrp and hum.Health > 0
-                            and isInsideRedZone(hrp.Position)
+                            and isCharInRedZone(c)
                             and (now - (lastChase[plr] or 0)) > CHASE_COOLDOWN then
                             chasePlayer(plr)
                             break
@@ -895,7 +1009,7 @@ task.spawn(function()
                     end
                 end
             end
-            task.wait(0.1)
+            RunService.Heartbeat:Wait() -- checa a cada frame: reação instantânea
         end
     end
 end)
