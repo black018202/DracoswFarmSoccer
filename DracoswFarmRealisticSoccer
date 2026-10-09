@@ -20,7 +20,7 @@ local DIVE_FREE_TIME = 0.8 -- segundos em que o mergulho roda livre, igual ao Au
 
 -- Segundos entre o pulo com Q e o tween de volta ao lugar salvo.
 -- Use 0 para voltar na hora (pode atrapalhar o pulo).
-local DIVE_RETURN_DELAY = 0.6
+local DIVE_RETURN_DELAY = 0.5
 
 -- Configurações de velocidade e stamina
 local y, z = 26, 16
@@ -581,7 +581,7 @@ end)
 local TweenService = game:GetService("TweenService")
 
 local WALK_POS = Vector3.new(156.1, 6.1, 10.8)
-local WALK_SPEED = 24        -- velocidade do tween (studs por segundo)
+local WALK_SPEED = 28        -- velocidade do tween de volta ao lugar salvo (studs por segundo): maior = mais rápido
 local WALK_KEEP_Y = false    -- false = usa o Y exato da coordenada; true = mantém a altura atual
 
 local walkTween
@@ -683,6 +683,7 @@ local DIVE_MAX_LATERAL = 20      -- limite da distância lateral usada nessa con
 local DIVE_URGENT_TIME = 0.15    -- bola chegando em menos que isso: pula na hora, sem confirmar
 local DIVE_CONFIRM_FRAMES = 2    -- senão precisa dar o MESMO lado em X checagens seguidas
 local DIVE_CONFIRM_WINDOW = 0.1  -- as checagens precisam ser seguidas (em segundos)
+local DIVE_MAX_BALL_HEIGHT = 3.5 -- bola mais alta que isso acima do seu HumanoidRootPart = por cima da cabeça, não pula
 local FAST_BALL = 35             -- acima disso a bola é chute/passe: perto de jogador não conta como "bola presa"
 local R, S = 0, 0
 
@@ -730,6 +731,11 @@ local function diveKeyFor(a1, ballPos, ballVel)
         local need = DIVE_TRIGGER_TIME + math.min(math.abs(crossX), DIVE_MAX_LATERAL) * DIVE_LATERAL_TIME
                    + pingSeconds * DIVE_PING_COMP
         if tReach > need then return nil end                -- ainda cedo: espera pra não errar o lado
+
+        -- altura prevista da bola quando chegar na sua linha (com gravidade)
+        local predictedY = ballPos.Y + ballVel.Y * tReach - 0.5 * Workspace.Gravity * tReach * tReach
+        if predictedY - a1.Position.Y > DIVE_MAX_BALL_HEIGHT then return nil end -- vai passar por cima da cabeça
+
         local urgent = tReach <= DIVE_URGENT_TIME + pingSeconds * DIVE_PING_COMP
         if crossX > 1.5 then return Enum.KeyCode.E, urgent
         elseif crossX < -1.5 then return Enum.KeyCode.Q, urgent end
@@ -737,6 +743,7 @@ local function diveKeyFor(a1, ballPos, ballVel)
     end
 
     -- bola não vem de frente: regra original (lado pela posição atual)
+    if ballPos.Y - a1.Position.Y > DIVE_MAX_BALL_HEIGHT then return nil end -- bola já está acima da cabeça
     if dist > q or a7.Z < t or a7.Z > u then return nil end
     if a7.X > 1.5 then return Enum.KeyCode.E, false elseif a7.X < -1.5 then return Enum.KeyCode.Q, false end
     return nil
@@ -911,6 +918,7 @@ local CHASE_MAX_FROM_POST = 50 -- não se afasta mais que isso do lugar salvo (W
 local CHASE_TIMEOUT = 2        -- desiste se não alcançar em X segundos
 local CHASE_HOLD = 0.3         -- segundos parado na bola antes de voltar
 local CHASE_COOLDOWN = 1.5     -- segundos antes de ir de novo na bola
+local CHASE_MAX_BALL_HEIGHT = 6 -- altura máxima da bola (studs acima do chão da área) pra ainda ir atrás dela
 local RED_ZONE_TRANSPARENCY = 0.85 -- transparência da área vermelha (0 = sólida, 1 = invisível)
 
 local redZone = Instance.new("Part")
@@ -959,6 +967,61 @@ local function isCharInRedZone(char, margin)
     return false
 end
 
+-- NUNCA SAIR DA ÁREA VERMELHA (parte do Auto Dive Farm)
+-- Depois que o personagem está dentro da área, ele é mantido dentro dela o tempo todo:
+-- andando, perseguindo a bola e também durante o mergulho (Q/E) do Auto Dive.
+local RED_ZONE_KEEP_MARGIN = 0.5 -- folga pra dentro da borda (studs)
+local insideZoneOnce = false     -- só começa a prender depois que você já entrou na área
+
+localPlayer.CharacterAdded:Connect(function()
+    insideZoneOnce = false
+end)
+
+RunService.Heartbeat:Connect(function()
+    if not autoDive then
+        insideZoneOnce = false
+        return
+    end
+
+    local char = localPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    local pos = hrp.Position
+    local minX = RED_ZONE_POS.X - RED_ZONE_LENGTH_X / 2 + RED_ZONE_KEEP_MARGIN
+    local maxX = RED_ZONE_POS.X + RED_ZONE_LENGTH_X / 2 - RED_ZONE_KEEP_MARGIN
+    local minZ = RED_ZONE_POS.Z - RED_ZONE_SIZE_Z / 2 + RED_ZONE_KEEP_MARGIN
+    local maxZ = RED_ZONE_POS.Z + RED_ZONE_SIZE_Z / 2 - RED_ZONE_KEEP_MARGIN
+
+    if not insideZoneOnce then
+        if pos.X >= minX and pos.X <= maxX and pos.Z >= minZ and pos.Z <= maxZ then
+            insideZoneOnce = true
+        end
+        return
+    end
+
+    local cx = math.clamp(pos.X, minX, maxX)
+    local cz = math.clamp(pos.Z, minZ, maxZ)
+
+    if cx ~= pos.X or cz ~= pos.Z then
+        local rotation = hrp.CFrame - hrp.CFrame.Position
+        hrp.CFrame = CFrame.new(cx, pos.Y, cz) * rotation
+
+        -- zera só a velocidade que empurrava pra fora
+        local vel = hrp.AssemblyLinearVelocity
+        hrp.AssemblyLinearVelocity = Vector3.new(
+            (cx ~= pos.X) and 0 or vel.X,
+            vel.Y,
+            (cz ~= pos.Z) and 0 or vel.Z
+        )
+    end
+end)
+
+-- Bola alta/no ar: o tween não vai atrás
+local function ballTooHigh(ball)
+    return (ball.Position.Y - RED_ZONE_POS.Y) > CHASE_MAX_BALL_HEIGHT
+end
+
 local lastBallChase = 0
 
 -- TWEEN NA BOLA: quando a bola (a mesma que o Auto Dive enxerga) entra na área vermelha,
@@ -980,6 +1043,9 @@ local function chaseBall()
 
         -- Mergulho (Q/E) começou: deixa o Auto Dive rodar livre
         if lastDiveClock >= startT then break end
+
+        -- Bola subiu (alta/no ar): desiste
+        if ballTooHigh(ball) then break end
 
         -- Bola saiu da área (e já passou o tempo de tolerância): para e volta pro gol
         if not isInsideRedZone(ball.Position) and os.clock() - startT > CHASE_EXIT_GRACE then break end
@@ -1073,7 +1139,7 @@ task.spawn(function()
             ballWasInside = ballInside
 
             if not chasingPlayer and meInside and os.clock() - lastDiveClock >= DIVE_FREE_TIME
-                and ballInside and (ballPending or ballMoving)
+                and ballInside and not (ball and ballTooHigh(ball)) and (ballPending or ballMoving)
                 and os.clock() - lastBallChase > CHASE_COOLDOWN then
                 ballPending = false
                 -- pcall: se der qualquer erro na perseguição, o tween não fica travado
