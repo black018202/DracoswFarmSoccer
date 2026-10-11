@@ -898,7 +898,7 @@ end)
 -- tween até a bola e depois volta pra coordenada salva (WALK_POS).
 local RED_ZONE_SIZE_X = 3                                            -- parte da área ATRÁS dos pés do personagem (em studs)
 local RED_ZONE_FRONT_EXTRA = 14                                       -- AUMENTO PRA FRENTE: quanto a área vai pra frente dos pés (em studs)
-local RED_ZONE_SIZE_Z = 28                                            -- lados da área (em studs)
+local RED_ZONE_SIZE_Z = 36                                            -- lados da área (em studs)
 local RED_ZONE_LOWER = 0.8                                            -- quanto a área desce em relação ao chão estimado (studs)
 local RED_ZONE_SELF_MARGIN = 40                                        -- folga só pra checar se VOCÊ está na área
 local RED_ZONE_LENGTH_X = RED_ZONE_SIZE_X + RED_ZONE_FRONT_EXTRA      -- comprimento total (atrás + frente)
@@ -917,7 +917,8 @@ local CHASE_EXIT_GRACE = 0.4   -- segundos que ainda vai atrás dela mesmo se a 
 local CHASE_MAX_FROM_POST = 50 -- não se afasta mais que isso do lugar salvo (WALK_POS)
 local CHASE_TIMEOUT = 2        -- desiste se não alcançar em X segundos
 local CHASE_HOLD = 0.3         -- segundos parado na bola antes de voltar
-local CHASE_COOLDOWN = 1.5     -- segundos antes de ir de novo na bola
+local CHASE_COOLDOWN = 0.5     -- segundos antes de ir de novo na bola
+local ZONE_DETECT_LEAD = 0.12 -- detecta a bola um pouco ANTES de ela entrar na área (segundos de antecedência)
 local CHASE_MAX_BALL_HEIGHT = 6 -- altura máxima da bola (studs acima do chão da área) pra ainda ir atrás dela
 local RED_ZONE_TRANSPARENCY = 0.85 -- transparência da área vermelha (0 = sólida, 1 = invisível)
 
@@ -1128,7 +1129,8 @@ task.spawn(function()
                 local bv = ball.AssemblyLinearVelocity or ball.Velocity
                 local repSpeed = Vector3.new(bv.X, 0, bv.Z).Magnitude
                 ballMoving = math.max(posSpeed, repSpeed) > 2.5
-                ballInside = isInsideRedZone(pos)
+                local leadPos = pos + Vector3.new(bv.X, 0, bv.Z) * ZONE_DETECT_LEAD
+                ballInside = isInsideRedZone(pos) or isInsideRedZone(leadPos)
             else
                 ballPrevPos = nil
             end
@@ -1150,6 +1152,46 @@ task.spawn(function()
                 end
             end
             RunService.Heartbeat:Wait() -- checa a cada frame: reação instantânea
+        end
+    end
+end)
+
+-- CTRL AO APARECER NA ÁREA VERMELHA (parte do Auto Dive Farm)
+-- Sempre que o seu personagem aparece/entra na área vermelha, espera CTRL_DELAY segundos
+-- e aperta o Ctrl UMA vez. Só aperta de novo depois que você sair e entrar na área outra vez.
+local CTRL_DELAY = 2                        -- segundos entre aparecer na área e apertar o Ctrl (0 = na hora)
+local CTRL_KEY = Enum.KeyCode.LeftControl   -- tecla apertada
+local ctrlBusy = false                      -- true enquanto espera o CTRL_DELAY
+local wasInRedZone = false                  -- true enquanto o personagem está dentro da área
+
+task.spawn(function()
+    while true do
+        task.wait(0.05)
+
+        if not autoDive then
+            wasInRedZone = false
+        elseif not ctrlBusy then
+            local char = localPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            local inside = hrp ~= nil and isInsideRedZone(hrp.Position)
+
+            if inside and not wasInRedZone then
+                -- acabou de aparecer na área vermelha: um único Ctrl
+                wasInRedZone = true
+                ctrlBusy = true
+
+                if CTRL_DELAY > 0 then task.wait(CTRL_DELAY) end
+
+                if autoDive then
+                    VirtualInputManager:SendKeyEvent(true, CTRL_KEY, false, game)
+                    task.wait(0.05)
+                    VirtualInputManager:SendKeyEvent(false, CTRL_KEY, false, game)
+                end
+
+                ctrlBusy = false
+            elseif not inside then
+                wasInRedZone = false
+            end
         end
     end
 end)
