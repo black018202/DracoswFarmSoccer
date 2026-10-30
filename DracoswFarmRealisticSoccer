@@ -773,12 +773,6 @@ RunService.Heartbeat:Connect(function(T)
 
     if not autoDive then return end
 
-    -- Enquanto o tween está indo na bola (área vermelha), o Auto Dive não pula
-    if chasingPlayer then
-        pendingKey, pendingCount = nil, 0
-        return
-    end
-
     local a0 = os.clock() if (a0 - R) < S then return end R = a0
     local a1 = U:FindFirstChild("HumanoidRootPart")
     local a2 = U:FindFirstChildOfClass("Humanoid") 
@@ -916,7 +910,7 @@ local RED_ZONE_POS = Vector3.new(
     WALK_POS.Y - 3 - RED_ZONE_LOWER,
     WALK_POS.Z
 ) -- centro (altura do chão)
-local CHASE_TWEEN_SPEED = 60   -- velocidade do tween até a bola (studs/s): maior = mais rápido
+local CHASE_TWEEN_SPEED = 50   -- velocidade do tween até a bola (studs/s): maior = mais rápido
 local CHASE_STOP_DIST = 2.5    -- para a X studs da bola (não entra dentro dela)
 local CHASE_LEAD = 0.1         -- mira pra onde a bola vai estar daqui a X segundos
 local CHASE_EXIT_GRACE = 0.4   -- segundos que ainda vai atrás dela mesmo se a bola já saiu da área
