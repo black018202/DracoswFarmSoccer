@@ -685,6 +685,7 @@ local DIVE_CONFIRM_FRAMES = 2    -- senão precisa dar o MESMO lado em X checage
 local DIVE_CONFIRM_WINDOW = 0.1  -- as checagens precisam ser seguidas (em segundos)
 local DIVE_MAX_BALL_HEIGHT = 3.5 -- bola mais alta que isso acima do seu HumanoidRootPart = por cima da cabeça, não pula
 local FAST_BALL = 35             -- acima disso a bola é chute/passe: perto de jogador não conta como "bola presa"
+local DIVE_MAX_CROSS = 12        -- bola que vai passar a mais de X studs do seu centro (chute pro canto/parede): não mergulha
 local R, S = 0, 0
 
 local pendingKey, pendingCount, pendingTime = nil, 0, 0
@@ -731,6 +732,7 @@ local function diveKeyFor(a1, ballPos, ballVel)
         local need = DIVE_TRIGGER_TIME + math.min(math.abs(crossX), DIVE_MAX_LATERAL) * DIVE_LATERAL_TIME
                    + pingSeconds * DIVE_PING_COMP
         if tReach > need then return nil end                -- ainda cedo: espera pra não errar o lado
+        if math.abs(crossX) > DIVE_MAX_CROSS then return nil end -- vai passar longe pro lado (bate na parede): não mergulha
 
         -- altura prevista da bola quando chegar na sua linha (com gravidade)
         local predictedY = ballPos.Y + ballVel.Y * tReach - 0.5 * Workspace.Gravity * tReach * tReach
@@ -745,6 +747,7 @@ local function diveKeyFor(a1, ballPos, ballVel)
     -- bola não vem de frente: regra original (lado pela posição atual)
     if ballPos.Y - a1.Position.Y > DIVE_MAX_BALL_HEIGHT then return nil end -- bola já está acima da cabeça
     if dist > q or a7.Z < t or a7.Z > u then return nil end
+    if math.abs(a7.X) > DIVE_MAX_CROSS then return nil end -- bola longe demais pro lado
     if a7.X > 1.5 then return Enum.KeyCode.E, false elseif a7.X < -1.5 then return Enum.KeyCode.Q, false end
     return nil
 end
@@ -910,7 +913,7 @@ local RED_ZONE_POS = Vector3.new(
     WALK_POS.Y - 3 - RED_ZONE_LOWER,
     WALK_POS.Z
 ) -- centro (altura do chão)
-local CHASE_TWEEN_SPEED = 50   -- velocidade do tween até a bola (studs/s): maior = mais rápido
+local CHASE_TWEEN_SPEED = 35   -- velocidade do tween até a bola (studs/s): maior = mais rápido
 local CHASE_STOP_DIST = 2.5    -- para a X studs da bola (não entra dentro dela)
 local CHASE_LEAD = 0.1         -- mira pra onde a bola vai estar daqui a X segundos
 local CHASE_EXIT_GRACE = 0.4   -- segundos que ainda vai atrás dela mesmo se a bola já saiu da área
@@ -1236,3 +1239,61 @@ task.spawn(function()
         end
     end
 end)
+
+-- HITBOX DA BOLA (liga/desliga JUNTO com o Auto Dive Farm, pelo mesmo botão)
+-- Quando o Auto Dive Farm está ativo, a hitbox também fica ativa. Quando desativa, ela para.
+local HITBOX_DISTANCE = 26       -- distância da hitbox (studs)
+local REAL_TOUCH_DISTANCE = 0.0  -- a menos de X studs o toque é de verdade: o script não mexe
+local TOUCH_COOLDOWN = 0.0       -- segundos entre um toque forçado e outro (muito rápido pode dar kick)
+
+local hitboxTouchFn = firetouchinterest or (getgenv and getgenv().firetouchinterest)
+if not hitboxTouchFn then
+    warn("[Hitbox] Seu executor não tem firetouchinterest: a hitbox não vai funcionar.")
+end
+
+local HITBOX_FOOT_NAMES = { "RightFoot", "LeftFoot", "RightLowerLeg", "LeftLowerLeg", "Right Leg", "Left Leg" }
+
+local function hitboxClosestFoot(char, point)
+    local best, bestDist = nil, math.huge
+    for _, name in ipairs(HITBOX_FOOT_NAMES) do
+        local part = char:FindFirstChild(name)
+        if part and part:IsA("BasePart") then
+            local d = (part.Position - point).Magnitude
+            if d < bestDist then best, bestDist = part, d end
+        end
+    end
+    if not best then
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then best, bestDist = hrp, (hrp.Position - point).Magnitude end
+    end
+    return best, bestDist
+end
+
+local lastHitboxTouch = 0
+
+if hitboxTouchFn then
+    RunService.Heartbeat:Connect(function()
+        if not autoDive then return end -- só funciona com o Auto Dive Farm ligado
+
+        local char = localPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not char or not hum or hum.Health <= 0 then return end
+
+        local ball = D()
+        if not ball then return end
+
+        local foot, dist = hitboxClosestFoot(char, ball.Position)
+        if not foot then return end
+
+        if dist <= HITBOX_DISTANCE and dist > REAL_TOUCH_DISTANCE then
+            local now = os.clock()
+            if now - lastHitboxTouch >= TOUCH_COOLDOWN then
+                lastHitboxTouch = now
+                pcall(function()
+                    hitboxTouchFn(foot, ball, 0) -- começa o toque
+                    hitboxTouchFn(foot, ball, 1) -- termina o toque
+                end)
+            end
+        end
+    end)
+end
